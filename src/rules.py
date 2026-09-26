@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from .domain import (
     ConflictError,
@@ -32,6 +32,75 @@ def _validate_probable(actor, entity, data, lookup):
         raise ValidationError("probable case requires an epidemiological link")
 
 
+def _contact_log_extra(actor, entity, data, result):
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    log = list(entity["data"].get("contact_log", []))
+    entry = {
+        "at": str(data.get("contacted_at") or now),
+        "result": result,
+        "by": actor.user_id,
+    }
+    if data.get("reason"):
+        entry["reason"] = data["reason"]
+    log.append(entry)
+    extra = {
+        "contact_log": log,
+        "contact_attempts": len(log),
+        "last_contact_result": result,
+        "last_contacted_at": entry["at"],
+    }
+    # 重复确认只追加新记录，不覆盖已有的首次联系时间
+    if not entity["data"].get("first_contacted_at"):
+        extra["first_contacted_at"] = entry["at"]
+    return extra
+
+
+def _validate_contact_answered(actor, entity, data, lookup):
+    return _contact_log_extra(actor, entity, data, "answered")
+
+
+def _validate_contact_no_answer(actor, entity, data, lookup):
+    extra = _contact_log_extra(actor, entity, data, "no_answer")
+    # 未接听从联系当天重新排队
+    extra["queued_on"] = extra["last_contacted_at"][:10]
+    return extra
+
+
+def _validate_contact_refused(actor, entity, data, lookup):
+    if not data.get("reason"):
+        raise ValidationError("refused contact requires a reason")
+    extra = _contact_log_extra(actor, entity, data, "refused")
+    # 拒访后停止随访待办并保留原因
+    extra.update({
+        "refusal_reason": data["reason"],
+        "followup_stopped": True,
+        "followup_todo": False,
+        "due_at": None,
+    })
+    return extra
+
+
+def _validate_reopen_contact(actor, entity, data, lookup):
+    case_id = entity["data"].get("case_id")
+    case = _find_one(lookup, "case", "id", case_id) if case_id else None
+    if not case:
+        raise ValidationError("linked case not found for contact")
+    case_exposure = case["data"].get("exposure_date") or case["data"].get("onset_date")
+    current_start = entity["data"].get("exposure_start")
+    if not case_exposure or not current_start:
+        raise ValidationError("exposure dates are required to reopen contact")
+    if _date_ordinal(case_exposure) <= _date_ordinal(current_start):
+        raise ValidationError("reopen requires a later exposure date on the linked case")
+    # 关联病例出现更晚暴露日：重新开放联系和随访
+    return {
+        "exposure_start": str(case_exposure)[:10],
+        "followup_stopped": False,
+        "followup_todo": True,
+        "reopened_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "reopen_reason": data.get("reason") or "later exposure date on linked case",
+    }
+
+
 def cluster_cases(cases, max_days=14):
     groups = []
     for case in sorted(cases, key=lambda item: str(item.get("onset_date", ""))):
@@ -49,17 +118,17 @@ def cluster_cases(cases, max_days=14):
 
 
 CUSTOM_CREATE = {'case': _validate_case}
-CUSTOM_TRANSITIONS = {('case', 'lab_positive'): _validate_lab_positive, ('case', 'mark_probable'): _validate_probable}
+CUSTOM_TRANSITIONS = {('case', 'lab_positive'): _validate_lab_positive, ('case', 'mark_probable'): _validate_probable, ('contact', 'contact_answered'): _validate_contact_answered, ('contact', 'contact_no_answer'): _validate_contact_no_answer, ('contact', 'contact_refused'): _validate_contact_refused, ('contact', 'reopen_contact'): _validate_reopen_contact}
 
 
 class RuleEngine:
     ALIASES = {'cases': 'case', 'contacts': 'contact'}
     INITIAL_STATUS = {'case': 'reported', 'contact': 'identified'}
-    TRANSITIONS = {'case': {'triage': (('reported',), 'investigating'), 'lab_positive': (('investigating',), 'confirmed'), 'mark_probable': (('investigating',), 'probable'), 'recover': (('confirmed', 'probable'), 'recovered'), 'close': (('recovered',), 'closed')}, 'contact': {'begin_followup': (('identified',), 'following'), 'complete_followup': (('following',), 'completed')}}
+    TRANSITIONS = {'case': {'triage': (('reported',), 'investigating'), 'lab_positive': (('investigating',), 'confirmed'), 'mark_probable': (('investigating',), 'probable'), 'recover': (('confirmed', 'probable'), 'recovered'), 'close': (('recovered',), 'closed')}, 'contact': {'begin_followup': (('identified',), 'following'), 'complete_followup': (('following',), 'completed'), 'contact_answered': (('identified', 'following', 'queued'), 'following'), 'contact_no_answer': (('identified', 'following', 'queued'), 'queued'), 'contact_refused': (('identified', 'following', 'queued'), 'refused'), 'reopen_contact': (('refused', 'completed'), 'following')}}
     CREATE_REQUIRED = {'case': ('person_id', 'onset_date', 'location', 'symptoms'), 'contact': ('case_id', 'person_id', 'exposure_start')}
-    ACTION_REQUIRED = {('case', 'triage'): ('clinician',), ('case', 'lab_positive'): ('lab_id', 'result'), ('case', 'mark_probable'): ('epi_link',), ('case', 'recover'): ('recovered_at',), ('case', 'close'): ('outcome',), ('contact', 'begin_followup'): ('followup_start', 'due_at'), ('contact', 'complete_followup'): ('outcome',)}
+    ACTION_REQUIRED = {('case', 'triage'): ('clinician',), ('case', 'lab_positive'): ('lab_id', 'result'), ('case', 'mark_probable'): ('epi_link',), ('case', 'recover'): ('recovered_at',), ('case', 'close'): ('outcome',), ('contact', 'begin_followup'): ('followup_start', 'due_at'), ('contact', 'complete_followup'): ('outcome',), ('contact', 'contact_refused'): ('reason',)}
     CREATE_ROLES = {'case': ('admin', 'clinician'), 'contact': ('admin', 'investigator')}
-    ROLE_ACTIONS = {'triage': ('admin', 'clinician'), 'lab_positive': ('admin', 'lab'), 'mark_probable': ('admin', 'investigator'), 'recover': ('admin', 'clinician'), 'close': ('admin', 'investigator'), 'begin_followup': ('admin', 'investigator'), 'complete_followup': ('admin', 'investigator')}
+    ROLE_ACTIONS = {'triage': ('admin', 'clinician'), 'lab_positive': ('admin', 'lab'), 'mark_probable': ('admin', 'investigator'), 'recover': ('admin', 'clinician'), 'close': ('admin', 'investigator'), 'begin_followup': ('admin', 'investigator'), 'complete_followup': ('admin', 'investigator'), 'contact_answered': ('admin', 'investigator'), 'contact_no_answer': ('admin', 'investigator'), 'contact_refused': ('admin', 'investigator'), 'reopen_contact': ('admin', 'investigator')}
 
     def normalize_kind(self, kind):
         return self.ALIASES.get(kind, kind)

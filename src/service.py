@@ -69,5 +69,33 @@ class DomainService:
             kind = self.rules.normalize_kind(kind)
         return self.repository.list_entities(kind=kind, status=status)
 
+    def contact_board(self):
+        items = []
+        pending_count = 0
+        for contact in self.repository.list_entities(kind="contact"):
+            data = contact["data"]
+            log = data.get("contact_log", [])
+            last = log[-1] if log else {}
+            pending = (
+                contact["status"] in ("identified", "following", "queued")
+                and not data.get("followup_stopped")
+            )
+            if pending:
+                pending_count += 1
+            items.append({
+                "id": contact["id"],
+                "case_id": data.get("case_id"),
+                "person_id": data.get("person_id"),
+                "status": contact["status"],
+                "attempts": len(log),
+                "last_result": last.get("result"),
+                "last_contacted_at": last.get("at"),
+                "queued_on": data.get("queued_on"),
+                "refusal_reason": data.get("refusal_reason"),
+                "followup_stopped": bool(data.get("followup_stopped")),
+                "pending": pending,
+            })
+        return {"pending_count": pending_count, "items": items}
+
     def audit_log(self, entity_id=None):
         return self.repository.list_audit(entity_id=entity_id)

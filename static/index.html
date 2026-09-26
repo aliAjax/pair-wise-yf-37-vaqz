@@ -17,18 +17,53 @@
   <p>这是最小演示页面。使用浏览器或 curl 调用 JSON API。</p>
   <p><button onclick="checkHealth()">检查服务状态</button></p>
   <pre id="result">等待操作</pre>
+  <h2>联系确认看板</h2>
+  <p>待处理人数：<strong id="pendingCount">-</strong> <button onclick="loadBoard()">刷新</button></p>
+  <table id="boardTable" border="1" cellspacing="0" cellpadding="4">
+    <thead>
+      <tr><th>接触者</th><th>状态</th><th>最近结果</th><th>最近联系时间</th><th>拒访原因</th><th>联系次数</th></tr>
+    </thead>
+    <tbody></tbody>
+  </table>
   <h2>常用接口</h2>
   <pre>GET  /health
 GET  /api/&lt;kind&gt;
 POST /api/&lt;kind&gt;
 GET  /api/entities/&lt;id&gt;
-POST /api/entities/&lt;id&gt;/actions</pre>
+POST /api/entities/&lt;id&gt;/actions
+GET  /api/contact_board</pre>
 </main>
 <script>
+const RESULT_LABELS = {answered: '接听', no_answer: '未接听', refused: '拒访'};
 async function checkHealth() {
   const response = await fetch('/health');
   document.getElementById('result').textContent = JSON.stringify(await response.json(), null, 2);
 }
+async function loadBoard() {
+  const response = await fetch('/api/contact_board');
+  const board = await response.json();
+  document.getElementById('pendingCount').textContent = board.pending_count;
+  const tbody = document.querySelector('#boardTable tbody');
+  tbody.innerHTML = '';
+  for (const item of board.items) {
+    const row = document.createElement('tr');
+    const cells = [
+      item.person_id || item.id,
+      item.status,
+      RESULT_LABELS[item.last_result] || item.last_result || '-',
+      item.last_contacted_at || '-',
+      item.refusal_reason || '-',
+      String(item.attempts),
+    ];
+    for (const text of cells) {
+      const cell = document.createElement('td');
+      cell.textContent = text;
+      row.appendChild(cell);
+    }
+    tbody.appendChild(row);
+  }
+}
+loadBoard();
 </script>
 </body>
 </html>
