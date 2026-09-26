@@ -33,9 +33,16 @@ python3 app.py --db ./data.db --port 8303
 - `POST /api/<kind>`：创建对象；请求体为JSON。
 - `GET /api/entities/<id>`：读取对象当前版本。
 - `POST /api/entities/<id>/actions`：提交`{"action":"动作名","data":{...},"expected_version":数字}`。
+- `GET /api/contact_queue`：联系确认待办，返回待处理人数、每个接触者的最近结果与拒访原因。
 - `GET /api/audit`：读取审计记录。
 
 请求身份通过`X-User-Id`和`X-Role`请求头传入。创建和动作的可执行角色由规则引擎控制。
+
+## 联系确认记录
+
+- `record_contact`（contact）：登记一次联系结果，`data.result`为`answered`（接听）、`unanswered`（未接听）或`refused`（拒访，须带`reason`）。每次联系追加到`contact_log`；首次接听时间`confirmed_at`不被后续重复确认覆盖；未接听将`queued_from`置为当天重新排队；拒访后状态变为`refused`，随访待办停止并显示拒访原因。
+- `update_exposure`（case）：登记更晚的暴露日`exposure_date`，必须晚于已记录值。
+- `reopen_contact`（contact）：仅当关联病例存在更晚暴露日时，已拒访或已完成的接触者重新开放为`identified`，可再次联系并重新开始随访。
 
 ## 测试
 

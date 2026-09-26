@@ -2,7 +2,7 @@ from uuid import uuid4
 
 from .audit import AuditTrail
 from .domain import ConflictError, NotFoundError
-from .rules import RuleEngine
+from .rules import PENDING_CONTACT_STATUSES, RuleEngine, is_contact_reopenable
 
 
 class DomainService:
@@ -68,6 +68,34 @@ class DomainService:
         if kind:
             kind = self.rules.normalize_kind(kind)
         return self.repository.list_entities(kind=kind, status=status)
+
+    def contact_queue(self):
+        contacts = self.repository.list_entities(kind="contact")
+        cases = {case["id"]: case for case in self.repository.list_entities(kind="case")}
+        items = []
+        pending_count = 0
+        for contact in contacts:
+            data = contact["data"]
+            pending = contact["status"] in PENDING_CONTACT_STATUSES
+            if pending:
+                pending_count += 1
+            items.append({
+                "id": contact["id"],
+                "person_id": data.get("person_id"),
+                "case_id": data.get("case_id"),
+                "status": contact["status"],
+                "pending": pending,
+                "last_result": data.get("last_result"),
+                "last_contact_at": data.get("last_contact_at"),
+                "confirmed_at": data.get("confirmed_at"),
+                "queued_from": data.get("queued_from"),
+                "refusal_reason": data.get("refusal_reason"),
+                "attempts": len(data.get("contact_log") or []),
+                "reopenable": is_contact_reopenable(contact, cases.get(data.get("case_id"))),
+                "created_at": contact["created_at"],
+            })
+        items.sort(key=lambda item: (not item["pending"], item["queued_from"] or item["created_at"]))
+        return {"pending_count": pending_count, "items": items}
 
     def audit_log(self, entity_id=None):
         return self.repository.list_audit(entity_id=entity_id)

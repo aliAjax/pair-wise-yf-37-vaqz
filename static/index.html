@@ -6,9 +6,14 @@
   <title>传染病暴发调查与接触网络</title>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 2rem; color: #1f2937; }
-    main { max-width: 820px; margin: auto; }
+    main { max-width: 960px; margin: auto; }
     pre { background: #f3f4f6; padding: 1rem; border-radius: 8px; overflow-x: auto; }
     button { padding: .5rem .8rem; cursor: pointer; }
+    input, select { padding: .4rem; }
+    table { border-collapse: collapse; width: 100%; margin-top: .5rem; }
+    th, td { border: 1px solid #d1d5db; padding: .35rem .6rem; text-align: left; font-size: .9rem; }
+    th { background: #f9fafb; }
+    .pending-count { font-size: 1.5rem; font-weight: 700; color: #b91c1c; }
   </style>
 </head>
 <body>
@@ -17,18 +22,89 @@
   <p>这是最小演示页面。使用浏览器或 curl 调用 JSON API。</p>
   <p><button onclick="checkHealth()">检查服务状态</button></p>
   <pre id="result">等待操作</pre>
+
+  <h2>联系确认待办</h2>
+  <p>待处理人数：<span id="pendingCount" class="pending-count">–</span>
+    <button onclick="loadQueue()">刷新</button></p>
+  <table>
+    <thead>
+      <tr><th>接触者</th><th>状态</th><th>待办</th><th>最近结果</th><th>最近联系时间</th><th>拒访原因</th><th>联系次数</th><th>可重新开放</th></tr>
+    </thead>
+    <tbody id="queueBody"></tbody>
+  </table>
+
+  <h2>登记联系结果</h2>
+  <p>
+    <input id="contactId" placeholder="接触者 ID" size="38">
+    <select id="contactResult">
+      <option value="answered">接听</option>
+      <option value="unanswered">未接听</option>
+      <option value="refused">拒访</option>
+    </select>
+    <input id="contactReason" placeholder="拒访原因（拒访时必填）">
+    <button onclick="recordContact()">提交</button>
+  </p>
+
   <h2>常用接口</h2>
   <pre>GET  /health
 GET  /api/&lt;kind&gt;
 POST /api/&lt;kind&gt;
 GET  /api/entities/&lt;id&gt;
-POST /api/entities/&lt;id&gt;/actions</pre>
+POST /api/entities/&lt;id&gt;/actions
+GET  /api/contact_queue</pre>
 </main>
 <script>
+const RESULT_LABELS = { answered: '接听', unanswered: '未接听', refused: '拒访' };
+const STATUS_LABELS = { identified: '已建档', following: '随访中', completed: '已完成', refused: '已拒访' };
+
 async function checkHealth() {
   const response = await fetch('/health');
   document.getElementById('result').textContent = JSON.stringify(await response.json(), null, 2);
 }
+
+async function loadQueue() {
+  const response = await fetch('/api/contact_queue');
+  const data = await response.json();
+  document.getElementById('pendingCount').textContent = data.pending_count;
+  const tbody = document.getElementById('queueBody');
+  tbody.innerHTML = '';
+  for (const item of data.items) {
+    const row = document.createElement('tr');
+    const cells = [
+      item.person_id || item.id,
+      STATUS_LABELS[item.status] || item.status,
+      item.pending ? '是' : '—',
+      RESULT_LABELS[item.last_result] || item.last_result || '—',
+      item.last_contact_at || '—',
+      item.refusal_reason || '—',
+      String(item.attempts),
+      item.reopenable ? '是' : '—',
+    ];
+    for (const text of cells) {
+      const cell = document.createElement('td');
+      cell.textContent = text;
+      row.appendChild(cell);
+    }
+    tbody.appendChild(row);
+  }
+}
+
+async function recordContact() {
+  const id = document.getElementById('contactId').value.trim();
+  if (!id) return;
+  const data = { result: document.getElementById('contactResult').value };
+  const reason = document.getElementById('contactReason').value.trim();
+  if (reason) data.reason = reason;
+  const response = await fetch('/api/entities/' + encodeURIComponent(id) + '/actions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-User-Id': 'web-investigator', 'X-Role': 'investigator' },
+    body: JSON.stringify({ action: 'record_contact', data: data }),
+  });
+  document.getElementById('result').textContent = JSON.stringify(await response.json(), null, 2);
+  loadQueue();
+}
+
+loadQueue();
 </script>
 </body>
 </html>
